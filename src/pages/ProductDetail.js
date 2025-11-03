@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { doc, getDoc, setDoc, collection, updateDoc, getDocs } from 'firebase/firestore';
+import { doc, getDoc, collection, updateDoc, getDocs, addDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from '../context/AuthContext';
 import { toast } from 'react-toastify';
@@ -126,7 +126,7 @@ const ProductDetail = () => {
       return;
     }
 
-    // Check if size selection is required but not selected
+    // Ensure size requirement
     const currentProduct = variants && variants.length > 0 ? variants[selectedVariantIndex] : product;
     if (requiresSizeSelection(currentProduct) && !selectedSize) {
       toast.error(`Please select ${getSizeTypeLabel(currentProduct).toLowerCase()} first`);
@@ -136,21 +136,42 @@ const ProductDetail = () => {
 
     try {
       const selected = currentProduct;
-      const cartItemRef = doc(db, `carts/${user.uid}/items`, selected.id);
+      const cartDocRef = doc(db, 'carts', user.uid);
+      const itemsRef = collection(cartDocRef, 'items');
 
-      await setDoc(cartItemRef, {
-        productId: selected.id,
-        groupId: selected.groupId || null,
-        name: selected.name,
-        price: selected.price,
-        image: selected.image,
-        selectedSize: selectedSize || null,
-        sizingType: selected.sizingType || 'none',
-        quantity: quantity,
-        addedAt: new Date().toISOString()
-      }, { merge: true });
+      // Try to find an existing item with same productId and size
+      const existingSnapshot = await getDocs(itemsRef);
+      const sizeKey = selectedSize || null;
+      const existing = existingSnapshot.docs.find(d => {
+        const data = d.data();
+        return data.productId === selected.id && (data.selectedSize || null) === sizeKey;
+      });
 
-      toast.success('Added to cart successfully');
+      if (existing) {
+        // Increment quantity instead of overwriting
+        const currentQty = Number(existing.data().quantity) || 0;
+        await updateDoc(existing.ref, {
+          quantity: currentQty + Number(quantity || 1),
+          addedAt: new Date().toISOString()
+        });
+        toast.success('Updated quantity in cart');
+      } else {
+        // Add new item document
+        const newItem = {
+          productId: selected.id,
+          groupId: selected.groupId || null,
+          name: selected.name,
+          price: selected.price,
+          image: selected.image,
+          selectedSize: sizeKey,
+          sizingType: selected.sizingType || 'none',
+          quantity: Number(quantity || 1),
+          addedAt: new Date().toISOString()
+        };
+
+        await addDoc(itemsRef, newItem);
+        toast.success('Added to cart successfully');
+      }
     } catch (error) {
       console.error('Error adding to cart:', error);
       toast.error('Failed to add to cart');
@@ -164,7 +185,6 @@ const ProductDetail = () => {
       return;
     }
 
-    // Check if size selection is required but not selected
     const currentProduct = variants && variants.length > 0 ? variants[selectedVariantIndex] : product;
     if (requiresSizeSelection(currentProduct) && !selectedSize) {
       toast.error(`Please select ${getSizeTypeLabel(currentProduct).toLowerCase()} first`);
@@ -174,20 +194,34 @@ const ProductDetail = () => {
 
     try {
       const selected = currentProduct;
-      const wishlistItemRef = doc(db, `wishlists/${user.uid}/items`, selected.id);
+      const wishlistDocRef = doc(db, 'wishlists', user.uid);
+      const itemsRef = collection(wishlistDocRef, 'items');
 
-      await setDoc(wishlistItemRef, {
-        productId: selected.id,
-        groupId: selected.groupId || null,
-        name: selected.name,
-        price: selected.price,
-        image: selected.image,
-        selectedSize: selectedSize || null,
-        sizingType: selected.sizingType || 'none',
-        addedAt: new Date().toISOString()
-      }, { merge: true });
+      // Prevent duplicate wishlist entries (same product + size)
+      const existingSnapshot = await getDocs(itemsRef);
+      const sizeKey = selectedSize || null;
+      const existing = existingSnapshot.docs.find(d => {
+        const data = d.data();
+        return data.productId === selected.id && (data.selectedSize || null) === sizeKey;
+      });
 
-      toast.success('Added to wishlist successfully');
+      if (existing) {
+        toast.info('Item already in wishlist');
+      } else {
+        const wishlistItem = {
+          productId: selected.id,
+          groupId: selected.groupId || null,
+          name: selected.name,
+          price: selected.price,
+          image: selected.image,
+          selectedSize: sizeKey,
+          sizingType: selected.sizingType || 'none',
+          addedAt: new Date().toISOString()
+        };
+
+        await addDoc(itemsRef, wishlistItem);
+        toast.success('Added to wishlist successfully');
+      }
     } catch (error) {
       console.error('Error adding to wishlist:', error);
       toast.error('Failed to add to wishlist');
@@ -528,14 +562,14 @@ const ProductDetail = () => {
                     <div className="relative">
                       <button
                         onClick={() => setShowSizeSelector(!showSizeSelector)}
-                        className="w-full flex items-center justify-between px-4 py-3 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
+                        className="w-full flex items-center justify-between px-4 py-3 border rounded-lg bg-white dark:bg-gray-800 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
                       >
-                        <span className={selectedSize ? 'text-text-primary dark:text-text-dark-primary' : 'text-text-tertiary dark:text-text-dark-tertiary'}>
+                        <span className={selectedSize ? 'text-text-primary dark:text-white font-semibold' : 'text-text-tertiary dark:text-text-dark-tertiary'}>
                           {selectedSize || `Select ${getSizeTypeLabel(currentProduct).toLowerCase()}`}
                         </span>
-                        <svg className={`w-5 h-5 text-gray-400 transition-transform duration-200 ${showSizeSelector ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
+                        <svg className={`w-5 h-5 text-gray-400 dark:text-gray-300 transition-transform duration-200 ${showSizeSelector ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                         </svg>
                       </button>
 
                       {showSizeSelector && (
@@ -554,8 +588,8 @@ const ProductDetail = () => {
                                 }}
                                 className={`px-3 py-2 text-sm font-medium rounded border-2 transition-all duration-200 ${
                                   selectedSize === size
-                                    ? 'bg-primary text-white border-primary shadow-lg'
-                                    : 'bg-surface dark:bg-surface-dark text-text-secondary dark:text-text-dark-secondary border-border dark:border-border-dark hover:border-primary hover:bg-primary/5'
+                                    ? 'bg-primary text-white border-primary shadow-lg ring-2 ring-offset-2 ring-primary'
+                                    : 'bg-surface text-text dark:bg-surface-dark dark:text-white border-border dark:border-border-dark hover:border-primary hover:bg-primary/5'
                                 }`}
                               >
                                 {size}
@@ -658,4 +692,4 @@ const ProductDetail = () => {
   );
 };
 
-export default ProductDetail; 
+export default ProductDetail;

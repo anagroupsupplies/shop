@@ -21,6 +21,21 @@ import {
   ArrowPathIcon,
   PhoneIcon
 } from '@heroicons/react/24/outline';
+import { Line } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+} from 'chart.js';
+import { format, addDays, differenceInCalendarDays, startOfDay } from 'date-fns';
+
+// register chart components
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
 
 const AdminPanel = () => {
   const [stats, setStats] = useState({
@@ -42,6 +57,8 @@ const AdminPanel = () => {
   const [timeRange, setTimeRange] = useState('30d');
   const [recentActivities, setRecentActivities] = useState([]);
   const [whatsappNumber, setWhatsappNumber] = useState('255683568254');
+  const [registrationData, setRegistrationData] = useState(null);
+  const [regLoading, setRegLoading] = useState(false);
   const intervalRef = useRef(null);
   const isFetchingRef = useRef(false);
   const lastRefreshRef = useRef(0);
@@ -90,6 +107,50 @@ const AdminPanel = () => {
         totalCategories: categoriesCountSnap.data().count || 0,
         activeUsers: activeUsersCount
       };
+
+      // fetch order counts to display accurate order metrics on the dashboard
+      try {
+        const ordersCountSnap = await getCountFromServer(query(collection(db, 'orders')));
+        const pendingOrdersSnap = await getCountFromServer(query(collection(db, 'orders'), where('status', '==', 'pending')));
+        const deliveredOrdersSnap = await getCountFromServer(query(collection(db, 'orders'), where('status', '==', 'delivered')));
+
+        quick.totalOrders = ordersCountSnap.data().count || 0;
+        quick.pendingOrders = pendingOrdersSnap.data().count || 0;
+        quick.completedOrders = deliveredOrdersSnap.data().count || 0;
+      } catch (err) {
+        console.warn('Order counts aggregation failed:', err);
+        quick.totalOrders = quick.totalOrders || 0;
+        quick.pendingOrders = quick.pendingOrders || 0;
+        quick.completedOrders = quick.completedOrders || 0;
+      }
+
+      // Compute total revenue from orders with status 'delivered'
+      let computedRevenue = 0;
+      try {
+        // Note: this performs a client-side aggregation by fetching delivered orders.
+        // For large datasets consider a Cloud Function to maintain an aggregate field instead.
+        const deliveredQuery = query(collection(db, 'orders'), where('status', '==', 'delivered'));
+        const deliveredSnapshot = await getDocs(deliveredQuery);
+        deliveredSnapshot.docs.forEach(d => {
+          const data = d.data();
+          const totalField = data.total;
+          let value = 0;
+          if (typeof totalField === 'number') {
+            value = totalField;
+          } else if (typeof totalField === 'string') {
+            // accept numeric strings like '12345' or '12345.67'
+            const m = totalField.match(/^\s*([0-9]+(\.[0-9]+)?)\s*$/);
+            if (m) value = parseFloat(m[1]);
+          }
+          if (!isNaN(value)) computedRevenue += Number(value);
+        });
+      } catch (err) {
+        console.warn('Failed to compute total revenue from delivered orders:', err);
+      }
+
+      // include revenue in quick stats
+      quick.totalRevenue = computedRevenue || 0;
+
       setStats(prev => ({ ...prev, ...quick }));
 
       // cache quick results (in-memory + localStorage)
@@ -209,6 +270,68 @@ const AdminPanel = () => {
     }
   }, []);
 
+  // Fetch user registration counts over the selected timeRange (daily buckets)
+  const fetchRegistrationTrends = useCallback(async () => {
+    setRegLoading(true);
+    try {
+      const now = new Date();
+      let days = 30;
+      if (timeRange === '7d') days = 7;
+      else if (timeRange === '90d') days = 90;
+
+      const startDate = startOfDay(addDays(now, - (days - 1)));
+
+      const usersQuery = query(collection(db, 'users'), where('createdAt', '>=', startDate), orderBy('createdAt', 'asc'));
+      const snap = await getDocs(usersQuery);
+
+      // build counts map keyed by ISO date string (yyyy-MM-dd) for consistency
+      const counts = {};
+      snap.docs.forEach(d => {
+        const data = d.data();
+        let created = data.createdAt;
+        let dateObj = null;
+        if (created && typeof created.toDate === 'function') {
+          dateObj = created.toDate();
+        } else if (typeof created === 'string' || typeof created === 'number') {
+          dateObj = new Date(created);
+        }
+        if (!dateObj || isNaN(dateObj.getTime())) return;
+        const key = format(startOfDay(dateObj), 'yyyy-MM-dd');
+        counts[key] = (counts[key] || 0) + 1;
+      });
+
+      // Build labels for each day from startDate -> now
+      const totalDays = differenceInCalendarDays(startOfDay(now), startOfDay(startDate)) + 1;
+      const labels = [];
+      const values = [];
+      for (let i = 0; i < totalDays; i++) {
+        const day = startOfDay(addDays(startDate, i));
+        const key = format(day, 'yyyy-MM-dd');
+        labels.push(format(day, 'MMM d'));
+        values.push(counts[key] || 0);
+      }
+
+      setRegistrationData({
+        labels,
+        datasets: [
+          {
+            label: 'Registrations',
+            data: values,
+            fill: true,
+            backgroundColor: 'rgba(16,185,129,0.12)',
+            borderColor: 'rgba(16,185,129,1)',
+            tension: 0.3,
+            pointRadius: 3
+          }
+        ]
+      });
+    } catch (err) {
+      console.error('Error fetching registration trends:', err);
+    } finally {
+      setRegLoading(false);
+    }
+  }, [timeRange]);
+
   // Fetch all dashboard data (function declaration)
   const fetchAllData = useCallback(async () => {
     if (isFetchingRef.current) return; // prevent overlapping
@@ -272,6 +395,11 @@ const AdminPanel = () => {
       document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [fetchAllData, fetchRealTimeMetrics]);
+
+  // ensure registration data is fetched when timeRange changes
+  useEffect(() => {
+    fetchRegistrationTrends().catch(err => console.error(err));
+  }, [fetchRegistrationTrends]);
 
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-TZ', {
@@ -619,12 +747,31 @@ const AdminPanel = () => {
         {/* User Registration Chart */}
         <div className="bg-white dark:bg-surface-dark rounded-lg shadow p-4 md:p-6">
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">User Registration Trends</h3>
-          <div className="h-64 flex items-center justify-center">
-            <div className="text-center">
-              <ChartBarIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-500 dark:text-gray-400">Chart visualization would go here</p>
-              <p className="text-sm text-gray-400 mt-2">Integration with charting library needed</p>
-            </div>
+          <div className="h-64">
+            {regLoading || !registrationData ? (
+              <div className="h-64 flex items-center justify-center">
+                <div className="text-center">
+                  <ChartBarIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-gray-500 dark:text-gray-400">Loading registration data...</p>
+                </div>
+              </div>
+            ) : (
+              <Line
+                data={registrationData}
+                options={{
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  plugins: {
+                    legend: { position: 'top' },
+                    title: { display: false }
+                  },
+                  scales: {
+                    x: { grid: { display: false } },
+                    y: { beginAtZero: true }
+                  }
+                }}
+              />
+            )}
           </div>
         </div>
 
@@ -684,20 +831,18 @@ const AdminPanel = () => {
                       {feature.trend === 'up' && (
                         <ArrowUpIcon className="h-3 w-3 text-green-500 mr-1" />
                       )}
-                      {feature.trend === 'warning' && (
-                        <ExclamationTriangleIcon className="h-3 w-3 text-orange-500 mr-1" />
+                      {feature.trend === 'down' && (
+                        <ArrowUpIcon className="h-3 w-3 text-red-500 mr-1 transform rotate-180" />
                       )}
-                      <span className={`text-xs truncate ${
-                        feature.trend === 'up' ? 'text-green-600' :
-                        feature.trend === 'warning' ? 'text-orange-600' :
-                        'text-gray-600 dark:text-gray-400'
-                      }`}>
+                      {feature.trend === 'neutral' && (
+                        <ExclamationTriangleIcon className="h-3 w-3 text-yellow-500 mr-1" />
+                      )}
+                      <span className="text-xs text-gray-500 dark:text-gray-400">
                         {feature.recent}
                       </span>
                     </div>
                   </div>
                 </div>
-                <EyeIcon className="h-4 w-4 md:h-5 md:w-5 text-gray-400 flex-shrink-0 ml-2" />
               </div>
             </Link>
           ))}
