@@ -27,7 +27,9 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => { loadingRef.current = loading; }, [loading]);
   useEffect(() => { userRef.current = user; }, [user]);
 
-  // Check if user is admin
+  // -------------------------
+  // Helper functions & actions
+  // -------------------------
   const checkAdminStatus = async (uid) => {
     try {
       const adminDoc = await getDoc(doc(db, 'admins', uid));
@@ -39,12 +41,11 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Get or create user profile
   const getOrCreateUserProfile = async (firebaseUser) => {
     try {
       const userDocRef = doc(db, 'users', firebaseUser.uid);
       const userDoc = await getDoc(userDocRef);
-      
+
       let userData;
       let isNewUser = false;
 
@@ -66,9 +67,9 @@ export const AuthProvider = ({ children }) => {
             marketing: false
           }
         };
-        
+
         await setDoc(userDocRef, userData);
-        
+
         // Track registration for new users
         await analyticsService.trackRegistration(
           firebaseUser.uid,
@@ -76,23 +77,15 @@ export const AuthProvider = ({ children }) => {
         );
       }
 
-      // Update last login
+      // Update last login for existing users
       if (!isNewUser) {
-        await setDoc(userDocRef, {
-          lastLogin: new Date().toISOString(),
-          isActive: true
-        }, { merge: true });
+        await setDoc(userDocRef, { lastLogin: new Date().toISOString(), isActive: true }, { merge: true });
       }
 
       return userData;
     } catch (error) {
       console.error('Error managing user profile:', error);
-      await analyticsService.trackError(
-        firebaseUser.uid,
-        'user_profile_management',
-        error.message,
-        error.stack
-      );
+      await analyticsService.trackError(firebaseUser?.uid || null, 'user_profile_management', error.message, error.stack);
       throw error;
     }
   };
@@ -101,25 +94,24 @@ export const AuthProvider = ({ children }) => {
   const signInWithGoogle = async () => {
     try {
       const provider = new GoogleAuthProvider();
+      const auth = getAuth();
       const result = await signInWithPopup(auth, provider);
-      
-      // Get or create user profile
-      const userData = await getOrCreateUserProfile(result.user);
-      
-      // Check if user is admin
-      const isAdmin = await checkAdminStatus(result.user.uid);
-      
-      // Enhanced user object
+
+      // Get or create user profile and admin status
+      const [userData, isAdmin] = await Promise.all([
+        getOrCreateUserProfile(result.user).catch(() => null),
+        checkAdminStatus(result.user.uid).catch(() => false)
+      ]);
+
       const enhancedUser = {
         ...result.user,
-        ...userData,
-        isAdmin
+        ...(userData || {}),
+        isAdmin: !!isAdmin
       };
 
       setUser(enhancedUser);
-      setUserProfile(userData);
+      setUserProfile(userData || null);
 
-      // Set user in analytics service and track login
       analyticsService.setUser(result.user.uid);
       await analyticsService.trackLogin(result.user.uid, 'google');
 
@@ -135,8 +127,9 @@ export const AuthProvider = ({ children }) => {
   const logout = async () => {
     try {
       if (user) {
-        await analyticsService.trackLogout(user.uid);
+        await analyticsService.trackLogout(user.uid).catch(() => {});
       }
+      const auth = getAuth();
       await signOut(auth);
       setUser(null);
       setUserProfile(null);
