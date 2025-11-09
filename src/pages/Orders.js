@@ -113,7 +113,7 @@ const Orders = () => {
     };
 
     loadData();
-  }, [user, orderId]); // Only depend on user and orderId, not functions
+  }, [user, orderId, fetchOrderById, fetchOrders]); // include memoized functions to satisfy linter
 
   const getStatusColor = (status) => {
     switch (status) {

@@ -1,6 +1,6 @@
 import React from 'react';
 import { useState, useEffect, useCallback } from 'react';
-import { collection, getDocs, doc, updateDoc, deleteDoc, addDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from '../context/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
@@ -77,54 +77,6 @@ const Cart = () => {
   const formatPrice = (price) => {
     const numPrice = Number(price) || 0;
     return `TZS ${numPrice.toLocaleString()}`;
-  };
-
-  const addToCartWithSize = async (productId, productData, selectedSize) => {
-    if (!user) {
-      toast.error('Please login to add items to cart');
-      return;
-    }
-
-    if (productData.sizes && productData.sizes.length > 0 && !selectedSize) {
-      toast.error('Please select a size');
-      return;
-    }
-
-    try {
-      const cartRef = doc(db, 'carts', user.uid);
-      const itemsRef = collection(cartRef, 'items');
-
-      const existingItemsSnapshot = await getDocs(itemsRef);
-      const existingDoc = existingItemsSnapshot.docs.find((d) => {
-        const data = d.data();
-        return data.productId === productId && data.selectedSize === selectedSize;
-      });
-
-      if (existingDoc) {
-        const currentQty = Number(existingDoc.data().quantity) || 0;
-        await updateDoc(existingDoc.ref, { quantity: currentQty + 1 });
-        toast.success('Item quantity updated in cart');
-      } else {
-        const newItem = {
-          productId,
-          name: productData.name,
-          price: parseFloat(productData.price) || 0,
-          image: productData.image || '',
-          selectedSize: selectedSize || null,
-          sizingType: productData.sizingType || 'none',
-          quantity: 1,
-          addedAt: new Date().toISOString(),
-        };
-
-        await addDoc(itemsRef, newItem);
-        toast.success('Item added to cart');
-      }
-
-      await fetchCartItems();
-    } catch (error) {
-      console.error('Error adding to cart:', error);
-      toast.error('Failed to add item to cart');
-    }
   };
 
   if (loading) {
