@@ -155,7 +155,7 @@ const AdminUsers = () => {
   // Run initial load
   useEffect(() => {
     fetchUsers(true);
-  }, []); // Empty dependency array to run only once on mount
+  }, [fetchUsers]); // depend on memoized fetchUsers
 
   // Re-run filtering when input/state values change
   useEffect(() => {

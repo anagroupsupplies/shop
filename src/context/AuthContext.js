@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useRef } from 'react';
 import {
   getAuth,
   signInWithPopup,
@@ -19,9 +19,9 @@ export const AuthProvider = ({ children }) => {
   const [userProfile, setUserProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const auth = getAuth();
-  // refs to avoid re-subscribing in onAuthStateChanged when loading/user change
-  const loadingRef = { current: loading };
-  const userRef = { current: user };
+  // stable refs to avoid re-subscribing in onAuthStateChanged when loading/user change
+  const loadingRef = useRef(loading);
+  const userRef = useRef(user);
 
   // keep refs in sync with state without affecting useEffect dependencies
   useEffect(() => { loadingRef.current = loading; }, [loading]);
@@ -199,7 +199,7 @@ export const AuthProvider = ({ children }) => {
                 analyticsService.setUser(firebaseUser.uid);
 
                 // Track login only if not initial load (non-blocking)
-                if (!loading) {
+                if (!loadingRef.current) {
                   analyticsService.trackLogin(
                     firebaseUser.uid,
                     firebaseUser.providerData[0]?.providerId === 'google.com' ? 'google' : 'email'
@@ -237,16 +237,16 @@ export const AuthProvider = ({ children }) => {
             }
           }
         } else {
-          // User logged out
-          try {
-            if (user && !loading) {
-              analyticsService.trackLogout(user.uid).catch(err =>
+           // User logged out
+           try {
+            if (userRef.current && !loadingRef.current) {
+              analyticsService.trackLogout(userRef.current.uid).catch(err =>
                 console.warn('Logout tracking failed:', err)
               );
             }
-          } catch (analyticsError) {
-            console.warn('Logout analytics failed:', analyticsError);
-          }
+           } catch (analyticsError) {
+             console.warn('Logout analytics failed:', analyticsError);
+           }
           
           setUser(null);
           setUserProfile(null);
