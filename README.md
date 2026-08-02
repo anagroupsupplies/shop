@@ -1,3 +1,3 @@
 ## ANTENKAYUME SHOP
 
-@ CODESKYTZ.SITE
+@ Antenkayume.SITE
